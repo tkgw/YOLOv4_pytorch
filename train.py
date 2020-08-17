@@ -1,4 +1,13 @@
 import argparse
+import glob
+import math
+import numpy as np
+import os
+from pathlib import Path
+import random
+import time
+from tqdm import tqdm
+import yaml
 
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -10,14 +19,12 @@ from torch.utils.tensorboard import SummaryWriter
 
 import test  # import test.py to get mAP after each epoch
 from models.yolo import Model
-from utils import google_utils
-from utils.datasets import *
-from utils.utils import *
+from utils import datasets, google_utils, torch_utils, utils
 
 mixed_precision = True
 try:  # Mixed precision training https://github.com/NVIDIA/apex
     from apex import amp
-except:
+except ImportError:
     print('Apex recommended for faster mixed precision training: https://github.com/NVIDIA/apex')
     mixed_precision = False  # not installed
 
@@ -63,7 +70,7 @@ def train(hyp, tb_writer, opt, device):
         yaml.dump(vars(opt), f, sort_keys=False)
 
     # Configure
-    init_seeds(2 + rank)
+    utils.init_seeds(2 + rank)
     with open(opt.data) as f:
         data_dict = yaml.load(f, Loader=yaml.FullLoader)  # model dict
     train_path = data_dict['train']
@@ -81,7 +88,7 @@ def train(hyp, tb_writer, opt, device):
 
     # Image sizes
     gs = int(max(model.stride))  # grid size (max stride)
-    imgsz, imgsz_test = [check_img_size(x, gs) for x in opt.img_size]  # verify imgsz are gs-multiples
+    imgsz, imgsz_test = [utils.check_img_size(x, gs) for x in opt.img_size]  # verify imgsz are gs-multiples
 
     # Optimizer
     nbs = 64  # nominal batch size
@@ -115,7 +122,7 @@ def train(hyp, tb_writer, opt, device):
     del pg0, pg1, pg2
 
     # Load Model
-    with torch_distributed_zero_first(rank):
+    with utils.torch_distributed_zero_first(rank):
         google_utils.attempt_download(weights)
     start_epoch, best_fitness = 0, 0.0
     if weights.endswith('.pt'):  # pytorch format
@@ -181,7 +188,7 @@ def train(hyp, tb_writer, opt, device):
         model = DDP(model, device_ids=[rank], output_device=rank)
 
     # Trainloader
-    dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt, hyp=hyp, augment=True,
+    dataloader, dataset = datasets.create_dataloader(train_path, imgsz, batch_size, gs, opt, hyp=hyp, augment=True,
                                             cache=opt.cache_images, rect=opt.rect, local_rank=rank,
                                             world_size=opt.world_size)
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
@@ -191,7 +198,7 @@ def train(hyp, tb_writer, opt, device):
     # Testloader
     if rank in [-1, 0]:
         # local_rank is set to -1. Because only the first process is expected to do evaluation.
-        testloader = create_dataloader(test_path, imgsz_test, total_batch_size, gs, opt, hyp=hyp, augment=False,
+        testloader = datasets.create_dataloader(test_path, imgsz_test, total_batch_size, gs, opt, hyp=hyp, augment=False,
                                        cache=opt.cache_images, rect=True, local_rank=-1, world_size=opt.world_size)[0]
 
     # Model parameters
@@ -199,7 +206,7 @@ def train(hyp, tb_writer, opt, device):
     model.nc = nc  # attach number of classes to model
     model.hyp = hyp  # attach hyperparameters to model
     model.gr = 1.0  # giou loss ratio (obj_loss = 1.0 or giou)
-    model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device)  # attach class weights
+    model.class_weights = utils.labels_to_class_weights(dataset.labels, nc).to(device)  # attach class weights
     model.names = names
 
     # Class frequency
@@ -208,13 +215,13 @@ def train(hyp, tb_writer, opt, device):
         c = torch.tensor(labels[:, 0])  # classes
         # cf = torch.bincount(c.long(), minlength=nc) + 1.
         # model._initialize_biases(cf.to(device))
-        plot_labels(labels, save_dir=log_dir)
+        utils.plot_labels(labels, save_dir=log_dir)
         if tb_writer:
             tb_writer.add_histogram('classes', c, 0)
 
         # Check anchors
         if not opt.noautoanchor:
-            check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
+            utils.check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
 
     # Start training
     t0 = time.time()
@@ -236,7 +243,7 @@ def train(hyp, tb_writer, opt, device):
             # Generate indices.
             if rank in [-1, 0]:
                 w = model.class_weights.cpu().numpy() * (1 - maps) ** 2  # class weights
-                image_weights = labels_to_image_weights(dataset.labels, nc=nc, class_weights=w)
+                image_weights = utils.labels_to_image_weights(dataset.labels, nc=nc, class_weights=w)
                 dataset.indices = random.choices(range(dataset.n), weights=image_weights,
                                                  k=dataset.n)  # rand weighted idx
             # Broadcast.
@@ -287,7 +294,7 @@ def train(hyp, tb_writer, opt, device):
             pred = model(imgs)
 
             # Loss
-            loss, loss_items = compute_loss(pred, targets.to(device), model)  # scaled by batch_size
+            loss, loss_items = utils.compute_loss(pred, targets.to(device), model)  # scaled by batch_size
             if rank != -1:
                 loss *= opt.world_size  # gradient averaged between devices in DDP mode
             if not torch.isfinite(loss):
@@ -319,7 +326,7 @@ def train(hyp, tb_writer, opt, device):
                 # Plot
                 if ni < 3:
                     f = str(Path(log_dir) / ('train_batch%g.jpg' % ni))  # filename
-                    result = plot_images(images=imgs, targets=targets, paths=paths, fname=f)
+                    result = utils.plot_images(images=imgs, targets=targets, paths=paths, fname=f)
                     if tb_writer and result is not None:
                         tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
                         # tb_writer.add_graph(model, imgs)  # add model to tensorboard
@@ -360,7 +367,7 @@ def train(hyp, tb_writer, opt, device):
                         tb_writer.add_scalar(tag, x, epoch)
 
                 # Update best mAP
-                fi = fitness(np.array(results).reshape(1, -1))  # fitness_i = weighted combination of [P, R, mAP, F1]
+                fi = utils.fitness(np.array(results).reshape(1, -1))  # fitness_i = weighted combination of [P, R, mAP, F1]
                 if fi > best_fitness:
                     best_fitness = fi
 
@@ -390,11 +397,11 @@ def train(hyp, tb_writer, opt, device):
             if os.path.exists(f1):
                 os.rename(f1, f2)  # rename
                 ispt = f2.endswith('.pt')  # is *.pt
-                strip_optimizer(f2) if ispt else None  # strip optimizer
+                utils.strip_optimizer(f2) if ispt else None  # strip optimizer
                 os.system('gsutil cp %s gs://%s/weights' % (f2, opt.bucket)) if opt.bucket and ispt else None  # upload
         # Finish
         if not opt.evolve:
-            plot_results(save_dir=log_dir)  # save as results.png
+            utils.plot_results(save_dir=log_dir)  # save as results.png
         print('%g epochs completed in %.3f hours.\n' % (epoch - start_epoch + 1, (time.time() - t0) / 3600))
 
     dist.destroy_process_group() if rank not in [-1, 0] else None
@@ -428,16 +435,16 @@ if __name__ == '__main__':
     parser.add_argument('--local_rank', type=int, default=-1, help='DDP parameter, do not modify')
     opt = parser.parse_args()
 
-    last = get_latest_run() if opt.resume == 'get_last' else opt.resume  # resume from most recent run
+    last = utils.get_latest_run() if opt.resume == 'get_last' else opt.resume  # resume from most recent run
     if last and not opt.weights:
         print(f'Resuming training from {last}')
     opt.weights = last if opt.resume and not opt.weights else opt.weights
     if opt.local_rank in [-1, 0]:
-        check_git_status()
-    opt.cfg = check_file(opt.cfg)  # check file
-    opt.data = check_file(opt.data)  # check file
+        utils.check_git_status()
+    opt.cfg = utils.check_file(opt.cfg)  # check file
+    opt.data = utils.check_file(opt.data)  # check file
     if opt.hyp:  # update hyps
-        opt.hyp = check_file(opt.hyp)  # check file
+        opt.hyp = utils.check_file(opt.hyp)  # check file
         with open(opt.hyp) as f:
             hyp.update(yaml.load(f, Loader=yaml.FullLoader))  # update hyps
     opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
@@ -462,7 +469,7 @@ if __name__ == '__main__':
     if not opt.evolve:
         if opt.local_rank in [-1, 0]:
             print('Start Tensorboard with "tensorboard --logdir=runs", view at http://localhost:6006/')
-            tb_writer = SummaryWriter(log_dir=increment_dir('runs/exp', opt.name))
+            tb_writer = SummaryWriter(log_dir=utils.increment_dir('runs/exp', opt.name))
         else:
             tb_writer = None
         train(hyp, tb_writer, opt, device)
@@ -482,8 +489,8 @@ if __name__ == '__main__':
                 parent = 'single'  # parent selection method: 'single' or 'weighted'
                 x = np.loadtxt('evolve.txt', ndmin=2)
                 n = min(5, len(x))  # number of previous results to consider
-                x = x[np.argsort(-fitness(x))][:n]  # top n mutations
-                w = fitness(x) - fitness(x).min()  # weights
+                x = x[np.argsort(-utils.fitness(x))][:n]  # top n mutations
+                w = utils.fitness(x) - utils.fitness(x).min()  # weights
                 if parent == 'single' or len(x) == 1:
                     # x = x[random.randint(0, n - 1)]  # random selection
                     x = x[random.choices(range(n), weights=w)[0]]  # weighted selection
@@ -512,7 +519,7 @@ if __name__ == '__main__':
             results = train(hyp.copy(), tb_writer, opt, device)
 
             # Write mutation results
-            print_mutation(hyp, results, opt.bucket)
+            utils.print_mutation(hyp, results, opt.bucket)
 
             # Plot results
             # plot_evolution_results(hyp)

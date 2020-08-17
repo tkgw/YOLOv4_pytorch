@@ -55,19 +55,17 @@ def time_synchronized():
 
 
 def is_parallel(model):
-    # is model is parallel with DP or DDP
-    return type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
+    return isinstance(model, (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel))
 
 
 def initialize_weights(model):
     for m in model.modules():
-        t = type(m)
-        if t is nn.Conv2d:
+        if isinstance(m, nn.Conv2d):
             pass  # nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-        elif t is nn.BatchNorm2d:
+        elif isinstance(m, nn.BatchNorm2d):
             m.eps = 1e-3
             m.momentum = 0.03
-        elif t in [nn.LeakyReLU, nn.ReLU, nn.ReLU6]:
+        elif isinstance(m, (nn.LeakyReLU, nn.ReLU, nn.ReLU6)):
             m.inplace = True
 
 
@@ -136,7 +134,7 @@ def model_info(model, verbose=False, imgsz=64, device='cpu'):
         from thop import profile
         flops = profile(deepcopy(model), inputs=(torch.zeros(1, 3, imgsz, imgsz).to(device),), verbose=verbose)[0] / 1E9 * 2
         fs = ', %.1f GFLOPS_%dx%d' % (flops, imgsz, imgsz)  # FLOPS
-    except:
+    except ImportError:
         fs = ''
 
     print('Model Summary: %g layers, %g parameters, %g gradients%s' % (len(list(model.parameters())), n_p, n_g, fs))

@@ -1,8 +1,17 @@
 import argparse
+import glob
 import json
+import numpy as np
+import os
+from pathlib import Path
+import shutil
+import torch
+from tqdm import tqdm
+import yaml
 
-from models.experimental import *
-from utils.datasets import *
+from utils import torch_utils, utils
+# from models.experimental import *
+# from utils.datasets import *
 
 
 def test(data,
@@ -39,8 +48,8 @@ def test(data,
             os.remove(f)
 
         # Load model
-        model = attempt_load(weights, map_location=device)  # load FP32 model
-        imgsz = check_img_size(imgsz, s=model.stride.max())  # check img_size
+        model = utils.attempt_load(weights, map_location=device)  # load FP32 model
+        imgsz = utils.check_img_size(imgsz, s=model.stride.max())  # check img_size
 
         # Multi-GPU disabled, incompatible with .half() https://github.com/ultralytics/yolov5/issues/99
         # if device.type != 'cpu' and torch.cuda.device_count() > 1:
@@ -64,12 +73,12 @@ def test(data,
         img = torch.zeros((1, 3, imgsz, imgsz), device=device)  # init img
         _ = model(img.half() if half else img) if device.type != 'cpu' else None  # run once
         path = data['test'] if opt.task == 'test' else data['val']  # path to val/test images
-        dataloader = create_dataloader(path, imgsz, batch_size, model.stride.max(), opt,
+        dataloader = utils.create_dataloader(path, imgsz, batch_size, model.stride.max(), opt,
                                        hyp=None, augment=False, cache=False, pad=0.5, rect=True)[0]
 
     seen = 0
     names = model.names if hasattr(model, 'names') else model.module.names
-    coco91class = coco80_to_coco91_class()
+    coco91class = utils.coco80_to_coco91_class()
     s = ('%20s' + '%12s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
     p, r, f1, mp, mr, map50, map, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
     loss = torch.zeros(3, device=device)
@@ -80,7 +89,7 @@ def test(data,
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
         targets = targets.to(device)
         nb, _, height, width = img.shape  # batch size, channels, height, width
-        whwh = torch.Tensor([width, height, width, height]).to(device)
+        whwh = torch.as_tensor([width, height, width, height], device=device)
 
         # Disable gradients
         with torch.no_grad():
@@ -91,11 +100,11 @@ def test(data,
 
             # Compute loss
             if training:  # if model has loss hyperparameters
-                loss += compute_loss([x.float() for x in train_out], targets, model)[1][:3]  # GIoU, obj, cls
+                loss += utils.compute_loss([x.float() for x in train_out], targets, model)[1][:3]  # GIoU, obj, cls
 
             # Run NMS
             t = torch_utils.time_synchronized()
-            output = non_max_suppression(inf_out, conf_thres=conf_thres, iou_thres=iou_thres, merge=merge)
+            output = utils.non_max_suppression(inf_out, conf_thres=conf_thres, iou_thres=iou_thres, merge=merge)
             t1 += torch_utils.time_synchronized() - t
 
         # Statistics per image
@@ -114,22 +123,22 @@ def test(data,
             if save_txt:
                 gn = torch.tensor(shapes[si][0])[[1, 0, 1, 0]]  # normalization gain whwh
                 txt_path = str(out / Path(paths[si]).stem)
-                pred[:, :4] = scale_coords(img[si].shape[1:], pred[:, :4], shapes[si][0], shapes[si][1])  # to original
+                pred[:, :4] = utils.scale_coords(img[si].shape[1:], pred[:, :4], shapes[si][0], shapes[si][1])  # to original
                 for *xyxy, conf, cls in pred:
-                    xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                    xywh = (utils.xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                     with open(txt_path + '.txt', 'a') as f:
                         f.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
 
             # Clip boxes to image bounds
-            clip_coords(pred, (height, width))
+            utils.clip_coords(pred, (height, width))
 
             # Append to pycocotools JSON dictionary
             if save_json:
                 # [{"image_id": 42, "category_id": 18, "bbox": [258.15, 41.29, 348.26, 243.78], "score": 0.236}, ...
                 image_id = Path(paths[si]).stem
                 box = pred[:, :4].clone()  # xyxy
-                scale_coords(img[si].shape[1:], box, shapes[si][0], shapes[si][1])  # to original shape
-                box = xyxy2xywh(box)  # xywh
+                utils.scale_coords(img[si].shape[1:], box, shapes[si][0], shapes[si][1])  # to original shape
+                box = utils.xyxy2xywh(box)  # xywh
                 box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
                 for p, b in zip(pred.tolist(), box.tolist()):
                     jdict.append({'image_id': int(image_id) if image_id.isnumeric() else image_id,
@@ -144,7 +153,7 @@ def test(data,
                 tcls_tensor = labels[:, 0]
 
                 # target boxes
-                tbox = xywh2xyxy(labels[:, 1:5]) * whwh
+                tbox = utils.xywh2xyxy(labels[:, 1:5]) * whwh
 
                 # Per target class
                 for cls in torch.unique(tcls_tensor):
@@ -154,7 +163,7 @@ def test(data,
                     # Search for detections
                     if pi.shape[0]:
                         # Prediction to target ious
-                        ious, i = box_iou(pred[pi, :4], tbox[ti]).max(1)  # best ious, indices
+                        ious, i = utils.box_iou(pred[pi, :4], tbox[ti]).max(1)  # best ious, indices
 
                         # Append detections
                         for j in (ious > iouv[0]).nonzero():
@@ -171,14 +180,14 @@ def test(data,
         # Plot images
         if batch_i < 1:
             f = Path(save_dir) / ('test_batch%g_gt.jpg' % batch_i)  # filename
-            plot_images(img, targets, paths, str(f), names)  # ground truth
+            utils.plot_images(img, targets, paths, str(f), names)  # ground truth
             f = Path(save_dir) / ('test_batch%g_pred.jpg' % batch_i)
-            plot_images(img, output_to_target(output, width, height), paths, str(f), names)  # predictions
+            utils.plot_images(img, utils.output_to_target(output, width, height), paths, str(f), names)  # predictions
 
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
     if len(stats) and stats[0].any():
-        p, r, ap, f1, ap_class = ap_per_class(*stats)
+        p, r, ap, f1, ap_class = utils.ap_per_class(*stats)
         p, r, ap50, ap = p[:, 0], r[:, 0], ap[:, 0], ap.mean(1)  # [P, R, AP@0.5, AP@0.5:0.95]
         mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
         nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
@@ -249,7 +258,7 @@ if __name__ == '__main__':
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
     opt = parser.parse_args()
     opt.save_json |= opt.data.endswith('coco.yaml')
-    opt.data = check_file(opt.data)  # check file
+    opt.data = utils.check_file(opt.data)  # check file
     print(opt)
 
     if opt.task in ['val', 'test']:  # run normally

@@ -1,14 +1,16 @@
 # This file contains modules common to various models
-
-
-from utils.utils import *
+import math
+import torch
+from torch import nn
 
 try:
     from mish_cuda import MishCuda as Mish
-except:
+except ImportError:
     class Mish(nn.Module):  # https://github.com/digantamisra98/Mish
         def forward(self, x):
             return x * torch.nn.functional.softplus(x).tanh()
+    MishCuda = Mish
+
 
 def autopad(k, p=None):  # kernel, padding
     # Pad to 'same'
@@ -101,7 +103,7 @@ class VoVCSP(nn.Module):
         _, x1 = x.chunk(2, dim=1)
         x1 = self.cv1(x1)
         x2 = self.cv2(x1)
-        return self.cv3(torch.cat((x1,x2), dim=1))
+        return self.cv3(torch.cat((x1, x2), dim=1))
 
 
 class SPP(nn.Module):

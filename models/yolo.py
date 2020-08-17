@@ -1,7 +1,13 @@
 import argparse
 from copy import deepcopy
+import math
+from pathlib import Path
+import torch
+from torch import nn
 
-from models.experimental import *
+from models.common import Bottleneck, BottleneckCSP, BottleneckCSP2, Concat, Conv, DWConv, Focus, SPP, SPPCSP, VoVCSP
+from models.experimental import C3, CrossConv, MixConv2d
+from utils import torch_utils, utils
 
 
 class Detect(nn.Module):
@@ -69,7 +75,7 @@ class Model(nn.Module):
             s = 128  # 2x min stride
             m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
             m.anchors /= m.stride.view(-1, 1, 1)
-            check_anchor_order(m)
+            utils.check_anchor_order(m)
             self.stride = m.stride
             self._initialize_biases()  # only run once
             # print('Strides: %s' % m.stride.tolist())
@@ -108,7 +114,7 @@ class Model(nn.Module):
                 try:
                     import thop
                     o = thop.profile(m, inputs=(x,), verbose=False)[0] / 1E9 * 2  # FLOPS
-                except:
+                except ImportError:
                     o = 0
                 t = torch_utils.time_synchronized()
                 for _ in range(10):
@@ -169,11 +175,11 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         for j, a in enumerate(args):
             try:
                 args[j] = eval(a) if isinstance(a, str) else a  # eval strings
-            except:
+            except Exception:
                 pass
 
         n = max(round(n * gd), 1) if n > 1 else n  # depth gain
-        if m in [nn.Conv2d, Conv, Bottleneck, SPP, DWConv, MixConv2d, Focus, CrossConv, BottleneckCSP, BottleneckCSP2, SPPCSP, VoVCSP, C3]:
+        if isinstance(m, (nn.Conv2d, Conv, Bottleneck, SPP, DWConv, MixConv2d, Focus, CrossConv, BottleneckCSP, BottleneckCSP2, SPPCSP, VoVCSP, C3)):
             c1, c2 = ch[f], args[0]
 
             # Normal
@@ -183,7 +189,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             #     c2 = int(ch[1] * ex ** e)
             # if m != Focus:
 
-            c2 = make_divisible(c2 * gw, 8) if c2 != no else c2
+            c2 = utils.make_divisible(c2 * gw, 8) if c2 != no else c2
 
             # Experimental
             # if i > 0 and args[0] != no:  # channel expansion factor
@@ -195,14 +201,14 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             #     c2 = make_divisible(c2, 8) if c2 != no else c2
 
             args = [c1, c2, *args[1:]]
-            if m in [BottleneckCSP, BottleneckCSP2, SPPCSP, VoVCSP, C3]:
+            if isinstance(m, (BottleneckCSP, BottleneckCSP2, SPPCSP, VoVCSP, C3)):
                 args.insert(2, n)
                 n = 1
-        elif m is nn.BatchNorm2d:
+        elif isinstance(m, nn.BatchNorm2d):
             args = [ch[f]]
-        elif m is Concat:
+        elif isinstance(m, Concat):
             c2 = sum([ch[-1 if x == -1 else x + 1] for x in f])
-        elif m is Detect:
+        elif isinstance(m, Detect):
             args.append([ch[x + 1] for x in f])
             if isinstance(args[1], int):  # number of anchors
                 args[1] = [list(range(args[1] * 2))] * len(f)
@@ -225,7 +231,7 @@ if __name__ == '__main__':
     parser.add_argument('--cfg', type=str, default='yolov5s.yaml', help='model.yaml')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     opt = parser.parse_args()
-    opt.cfg = check_file(opt.cfg)  # check file
+    opt.cfg = utils.check_file(opt.cfg)  # check file
     device = torch_utils.select_device(opt.device)
 
     # Create model

@@ -1,6 +1,8 @@
 # This file contains experimental modules
-
-from models.common import *
+import numpy as np
+import torch
+from torch import nn
+from models.common import Conv, DWConv
 from utils import google_utils
 
 
