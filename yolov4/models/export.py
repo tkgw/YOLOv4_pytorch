@@ -7,7 +7,7 @@ Usage:
 import argparse
 import torch
 
-from utils import google_utils
+from ..utils import google_utils
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

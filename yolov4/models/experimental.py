@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torch import nn
 from .common import Conv, DWConv
-from utils import google_utils
+from ..utils import google_utils
 
 
 class CrossConv(nn.Module):
@@ -128,6 +128,7 @@ class Ensemble(nn.ModuleList):
 
 
 def attempt_load(weights, map_location=None):
+    from .. import models
     # Loads an ensemble of models weights=[a,b,c] or a single model weights=[a] or weights=a
     model = Ensemble()
     for w in weights if isinstance(weights, list) else [weights]:

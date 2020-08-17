@@ -9,9 +9,7 @@ import torch
 from tqdm import tqdm
 import yaml
 
-from utils import torch_utils, utils
-# from models.experimental import *
-# from utils.datasets import *
+from yolov4.utils import torch_utils, utils
 
 
 def test(data,

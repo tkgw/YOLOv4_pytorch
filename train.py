@@ -18,8 +18,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 
 import test  # import test.py to get mAP after each epoch
-from models.yolo import Model
-from utils import datasets, google_utils, torch_utils, utils
+from yolov4.models.yolo import Model
+from yolov4.utils import datasets, google_utils, torch_utils, utils
 
 mixed_precision = True
 try:  # Mixed precision training https://github.com/NVIDIA/apex
