@@ -5,8 +5,8 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from models.common import Bottleneck, BottleneckCSP, BottleneckCSP2, Concat, Conv, DWConv, Focus, SPP, SPPCSP, VoVCSP
-from models.experimental import C3, CrossConv, MixConv2d
+from .common import Bottleneck, BottleneckCSP, BottleneckCSP2, Concat, Conv, DWConv, Focus, SPP, SPPCSP, VoVCSP
+from .experimental import C3, CrossConv, MixConv2d
 from utils import torch_utils, utils
 
 

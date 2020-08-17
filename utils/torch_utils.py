@@ -4,8 +4,8 @@ import time
 from copy import deepcopy
 
 import torch
-import torch.backends.cudnn as cudnn
-import torch.nn as nn
+from torch.backends import cudnn
+from torch import nn
 import torch.nn.functional as F
 import torchvision.models as models
 
